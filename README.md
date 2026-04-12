@@ -30,6 +30,13 @@ Windows용 QR 코드 생성 및 프린터 출력 데스크톱 애플리케이션
 └─────────────────────┘
 ```
 
+## 다운로드
+
+[최신 버전 다운로드 (Releases)](https://github.com/smc5720/QR-Code-Printer/releases/latest)
+
+- **QR-Code-Printer.exe** — Python 설치 없이 바로 실행 가능
+- **qr_printer.py** — Python 환경에서 직접 실행
+
 ## 요구 사항
 
 - **OS**: Windows
