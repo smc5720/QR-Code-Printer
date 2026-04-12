@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -204,7 +204,7 @@ def build_full_image(
         ─────────────────────
         [QR 코드]
         ─────────────────────
-        [ID + 생성 시각]      (항상 표시)
+        [ID]                  (항상 표시)
         ─────────────────────
         [하단 문구]   (bottom_text 있을 때만)
         ─────────────────────
@@ -219,7 +219,7 @@ def build_full_image(
     font_info    = load_font(fs_info)
     font_caption = load_font(fs_caption)
 
-    info_text = f"ID: {unique_value}\n생성: {generated_at.strftime('%Y-%m-%d %H:%M:%S')}"
+    info_text = f"ID: {unique_value}"
 
     top_h    = measure_text_block(top_text,    font_caption, pad_v, line_gap) if top_text.strip()    else 0
     info_h   = measure_text_block(info_text,   font_info,    pad_v, line_gap)
@@ -289,7 +289,7 @@ def print_image_win32(printer_name: str, img: Image.Image):
             py = hdc.GetDeviceCaps(win32con.VERTRES)
 
             iw, ih = img.size
-            s = min(px / iw, py / ih) * 0.6
+            s = min(px / iw, py / ih) * 0.85
             dw, dh = int(iw * s), int(ih * s)
             xo = (px - dw) // 2
             yo = int(py * 0.05)
@@ -307,6 +307,34 @@ def print_image_win32(printer_name: str, img: Image.Image):
 
 
 # ──────────────────────────────────────────────
+#  설정 저장/불러오기
+# ──────────────────────────────────────────────
+
+def _config_path():
+    base = os.path.dirname(os.path.abspath(sys.argv[0]))
+    return os.path.join(base, "qr_printer_config.json")
+
+
+def load_config():
+    path = _config_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_config(data):
+    try:
+        with open(_config_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+# ──────────────────────────────────────────────
 #  GUI
 # ──────────────────────────────────────────────
 
@@ -317,11 +345,17 @@ class QRPrinterApp(tk.Tk):
         self.resizable(False, False)
         self.configure(bg="#F0F4F8")
 
+        base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(sys.argv[0])))
+        icon_path = os.path.join(base, "icon.ico")
+        if os.path.exists(icon_path):
+            self.iconbitmap(icon_path)
+
         self._unique_value = None
         self._generated_at = None
         self._tk_img       = None
 
         self._build_ui()
+        self._load_saved_texts()
         self._refresh_printers()
         self._generate()
         self.after(1000, self._check_update_background)
@@ -455,7 +489,21 @@ class QRPrinterApp(tk.Tk):
         return (self.top_text.get("1.0", "end-1c"),
                 self.bottom_text.get("1.0", "end-1c"))
 
+    def _load_saved_texts(self):
+        cfg = load_config()
+        top = cfg.get("top_text", "")
+        bottom = cfg.get("bottom_text", "")
+        if top:
+            self.top_text.insert("1.0", top)
+        if bottom:
+            self.bottom_text.insert("1.0", bottom)
+
+    def _save_texts(self):
+        top, bottom = self._get_texts()
+        save_config({"top_text": top, "bottom_text": bottom})
+
     def _on_text_change(self):
+        self._save_texts()
         if self._unique_value:
             self._update_preview()
 

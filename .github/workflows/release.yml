@@ -21,7 +21,7 @@ jobs:
         run: pip install qrcode[pil] pillow pywin32 pyinstaller
 
       - name: Build exe
-        run: pyinstaller --onefile --windowed --name QR-Code-Printer qr_printer.py
+        run: pyinstaller --onefile --windowed --icon=icon.ico --add-data "icon.ico;." --name QR-Code-Printer qr_printer.py
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
