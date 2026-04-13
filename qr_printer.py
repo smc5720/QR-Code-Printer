@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -451,9 +451,8 @@ class QRPrinterApp(tk.Tk):
         self._load_saved_texts()
         self._refresh_printers()
         self._generate()
-        # 가로 너비 600px 고정 (세로는 컨텐츠 높이에 맞춤)
-        self.update_idletasks()
-        self.geometry(f"600x{self.winfo_reqheight()}")
+        # 가로 600px 고정, 세로는 컨텐츠에 맞춰 자동 조절
+        self._refit_height()
         self.after(1000, self._check_update_background)
         self.after(30_000, self._refresh_warn_label)
 
@@ -763,6 +762,7 @@ class QRPrinterApp(tk.Tk):
 
         self._tk_img = ImageTk.PhotoImage(preview)
         self.qr_label.config(image=self._tk_img)
+        self._refit_height()
 
     def _print(self):
         if not self._unique_value:
@@ -883,6 +883,13 @@ class QRPrinterApp(tk.Tk):
                                      bg="#E2E8F0", fg="#1E293B",
                                      activebackground="#CBD5E1")
         self.history_btn.config(state=("normal" if self._print_history else "disabled"))
+        self._refit_height()
+
+    def _refit_height(self):
+        """가로 600 유지, 세로는 현재 요구 높이로 재조정. 배너/방향 변경 등 레이아웃 변화 후 호출."""
+        # PhotoImage 스왑 등 이미지 기반 reqheight 갱신을 확실히 반영하기 위해 full update
+        self.update()
+        self.geometry(f"600x{self.winfo_reqheight()}")
 
     def _refresh_warn_label(self, schedule_next: bool = True):
         """배너의 '~분 전' 표시 주기적 갱신."""
