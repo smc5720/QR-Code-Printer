@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.3.2"
+VERSION = "1.4.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -160,16 +160,29 @@ def apply_update(new_file_path: str):
 # ──────────────────────────────────────────────
 #  폰트 로드 헬퍼
 # ──────────────────────────────────────────────
-FONT_PATHS = [
-    "C:/Windows/Fonts/malgun.ttf",   # 맑은 고딕 (한국어)
-    "C:/Windows/Fonts/arial.ttf",
-    "C:/Windows/Fonts/consola.ttf",
-    "C:/Windows/Fonts/cour.ttf",
-]
+# 각 패밀리별 (regular, bold) 경로
+FONT_FAMILIES = {
+    "맑은 고딕":     ("C:/Windows/Fonts/malgun.ttf",  "C:/Windows/Fonts/malgunbd.ttf"),
+    "Arial":        ("C:/Windows/Fonts/arial.ttf",   "C:/Windows/Fonts/arialbd.ttf"),
+    "Consolas":     ("C:/Windows/Fonts/consola.ttf", "C:/Windows/Fonts/consolab.ttf"),
+    "Courier New":  ("C:/Windows/Fonts/cour.ttf",    "C:/Windows/Fonts/courbd.ttf"),
+}
+DEFAULT_FONT_FAMILY = "맑은 고딕"
 
-def load_font(size: int):
-    for fp in FONT_PATHS:
-        if os.path.exists(fp):
+
+def load_font(size: int, family: str = DEFAULT_FONT_FAMILY, bold: bool = False):
+    """지정한 패밀리/굵기의 폰트를 로드. 없으면 다른 패밀리로 폴백."""
+    primary = FONT_FAMILIES.get(family, FONT_FAMILIES[DEFAULT_FONT_FAMILY])
+    # 1) 요청한 패밀리 (bold 우선)
+    candidates = [primary[1 if bold else 0], primary[0]]
+    # 2) 다른 패밀리 폴백
+    for f, paths in FONT_FAMILIES.items():
+        if f == family:
+            continue
+        candidates.append(paths[1 if bold else 0])
+        candidates.append(paths[0])
+    for fp in candidates:
+        if fp and os.path.exists(fp):
             try:
                 return ImageFont.truetype(fp, size)
             except Exception:
@@ -233,6 +246,9 @@ def build_full_image(
     top_text: str = "",
     bottom_text: str = "",
     scale: float = 1.0,
+    caption_family: str = DEFAULT_FONT_FAMILY,
+    caption_size: int = 17,
+    caption_bold: bool = False,
 ) -> Image.Image:
     """
     QR 코드 위아래에 문구를 추가한 최종 이미지 생성.
@@ -251,12 +267,12 @@ def build_full_image(
     W = qr_img.width
 
     fs_info    = max(12, int(13 * scale))
-    fs_caption = max(14, int(17 * scale))
+    fs_caption = max(8,  int(caption_size * scale))
     pad_v      = max(6,  int(8  * scale))
     line_gap   = 4
 
     font_info    = load_font(fs_info)
-    font_caption = load_font(fs_caption)
+    font_caption = load_font(fs_caption, caption_family, caption_bold)
 
     info_text = f"ID: {unique_value}"
 
@@ -490,19 +506,56 @@ class QRPrinterApp(tk.Tk):
         text_style  = dict(height=2, width=36, font=("맑은 고딕", 10),
                            relief="solid", bd=1, highlightthickness=0)
 
-        tk.Label(il, text="상단 문구", **label_style).grid(row=0, column=0, sticky="nw", pady=(0, 6))
-        self.top_text = tk.Text(il, **text_style)
+        # 폰트 옵션 (문구에 적용)
+        ff = tk.Frame(il, bg=CARD)
+        ff.pack(fill="x", pady=(0, 8))
+        tk.Label(ff, text="폰트",
+                 bg=CARD, font=("맑은 고딕", 9, "bold"),
+                 fg="#475569", width=8, anchor="nw"
+                 ).pack(side="left")
+        self.font_family_var = tk.StringVar(value=DEFAULT_FONT_FAMILY)
+        font_combo = ttk.Combobox(ff, textvariable=self.font_family_var,
+                                  values=list(FONT_FAMILIES.keys()),
+                                  state="readonly", width=12,
+                                  font=("맑은 고딕", 9))
+        font_combo.pack(side="left")
+        font_combo.bind("<<ComboboxSelected>>", lambda e: self._on_font_change())
+
+        tk.Label(ff, text="크기",
+                 bg=CARD, font=("맑은 고딕", 9, "bold"), fg="#475569"
+                 ).pack(side="left", padx=(12, 4))
+        self.font_size_var = tk.StringVar(value="17")
+        size_combo = ttk.Combobox(ff, textvariable=self.font_size_var,
+                                  values=["10", "12", "14", "16", "17",
+                                          "18", "20", "24", "28", "32"],
+                                  state="readonly", width=5,
+                                  font=("맑은 고딕", 9))
+        size_combo.pack(side="left")
+        size_combo.bind("<<ComboboxSelected>>", lambda e: self._on_font_change())
+
+        self.font_bold_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(ff, text="굵게", variable=self.font_bold_var,
+                       command=self._on_font_change,
+                       bg=CARD, font=("맑은 고딕", 9), cursor="hand2"
+                       ).pack(side="left", padx=(12, 0))
+
+        # 텍스트 입력
+        tg = tk.Frame(il, bg=CARD)
+        tg.pack(fill="x")
+
+        tk.Label(tg, text="상단 문구", **label_style).grid(row=0, column=0, sticky="nw", pady=(0, 6))
+        self.top_text = tk.Text(tg, **text_style)
         self.top_text.grid(row=0, column=1, sticky="ew", pady=(0, 6))
         self.top_text.bind("<KeyRelease>", lambda e: self._on_text_change())
 
-        tk.Label(il, text="하단 문구", **label_style).grid(row=1, column=0, sticky="nw")
-        self.bottom_text = tk.Text(il, **text_style)
+        tk.Label(tg, text="하단 문구", **label_style).grid(row=1, column=0, sticky="nw")
+        self.bottom_text = tk.Text(tg, **text_style)
         self.bottom_text.grid(row=1, column=1, sticky="ew")
         self.bottom_text.bind("<KeyRelease>", lambda e: self._on_text_change())
 
-        il.columnconfigure(1, weight=1)
+        tg.columnconfigure(1, weight=1)
 
-        tk.Label(il,
+        tk.Label(tg,
                  text="※ Enter로 줄바꿈 가능  |  비워두면 해당 영역 미출력",
                  bg=CARD, font=("맑은 고딕", 8), fg="#94A3B8"
                  ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -578,6 +631,12 @@ class QRPrinterApp(tk.Tk):
             self.bottom_text.insert("1.0", bottom)
         if orientation in ("portrait", "landscape"):
             self.orientation_var.set(orientation)
+        family = cfg.get("font_family", DEFAULT_FONT_FAMILY)
+        if family in FONT_FAMILIES:
+            self.font_family_var.set(family)
+        size = cfg.get("font_size", 17)
+        self.font_size_var.set(str(size))
+        self.font_bold_var.set(bool(cfg.get("font_bold", False)))
 
     def _save_texts(self):
         top, bottom = self._get_texts()
@@ -585,7 +644,16 @@ class QRPrinterApp(tk.Tk):
             "top_text": top,
             "bottom_text": bottom,
             "orientation": self.orientation_var.get(),
+            "font_family": self.font_family_var.get(),
+            "font_size": self._get_font_size(),
+            "font_bold": self.font_bold_var.get(),
         })
+
+    def _get_font_size(self) -> int:
+        try:
+            return max(6, int(self.font_size_var.get()))
+        except (TypeError, ValueError):
+            return 17
 
     def _on_text_change(self):
         self._save_texts()
@@ -593,6 +661,11 @@ class QRPrinterApp(tk.Tk):
             self._update_preview()
 
     def _on_orientation_change(self):
+        self._save_texts()
+        if self._unique_value:
+            self._update_preview()
+
+    def _on_font_change(self):
         self._save_texts()
         if self._unique_value:
             self._update_preview()
@@ -608,7 +681,10 @@ class QRPrinterApp(tk.Tk):
         top, bottom = self._get_texts()
         qr_img = generate_qr_image(self._unique_value, box_size=6, border=3)
         full   = build_full_image(qr_img, self._unique_value, self._generated_at,
-                                  top_text=top, bottom_text=bottom, scale=1.0)
+                                  top_text=top, bottom_text=bottom, scale=1.0,
+                                  caption_family=self.font_family_var.get(),
+                                  caption_size=self._get_font_size(),
+                                  caption_bold=self.font_bold_var.get())
         if self.orientation_var.get() == "landscape":
             full = full.rotate(-90, expand=True)
 
@@ -631,7 +707,10 @@ class QRPrinterApp(tk.Tk):
         top, bottom = self._get_texts()
         print_qr  = generate_qr_image(self._unique_value, box_size=20, border=6)
         print_img = build_full_image(print_qr, self._unique_value, self._generated_at,
-                                     top_text=top, bottom_text=bottom, scale=3.0)
+                                     top_text=top, bottom_text=bottom, scale=3.0,
+                                     caption_family=self.font_family_var.get(),
+                                     caption_size=self._get_font_size(),
+                                     caption_bold=self.font_bold_var.get())
         if self.orientation_var.get() == "landscape":
             print_img = print_img.rotate(-90, expand=True)
         try:
