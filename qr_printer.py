@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -408,9 +408,9 @@ class QRPrinterApp(tk.Tk):
         self.configure(bg="#F0F4F8")
 
         base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(sys.argv[0])))
-        icon_path = os.path.join(base, "icon.ico")
-        if os.path.exists(icon_path):
-            self.iconbitmap(icon_path)
+        self._icon_path = os.path.join(base, "icon.ico")
+        if os.path.exists(self._icon_path):
+            self.iconbitmap(self._icon_path)
 
         self._unique_value = None
         self._generated_at = None
@@ -652,6 +652,8 @@ class QRPrinterApp(tk.Tk):
         dlg.title("업데이트 중...")
         dlg.resizable(False, False)
         dlg.configure(bg="#FFFFFF")
+        if os.path.exists(self._icon_path):
+            dlg.iconbitmap(self._icon_path)
         dlg.grab_set()
         dlg.protocol("WM_DELETE_WINDOW", lambda: None)
 
