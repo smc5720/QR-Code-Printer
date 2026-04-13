@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -732,6 +732,7 @@ class QRPrinterApp(tk.Tk):
         # 새 QR은 아직 출력되지 않은 상태 → 경고/버튼 원복
         self._print_count   = 0
         self._last_print_at = None
+        self.quantity_var.set("1")
         self._update_preview()
         self.uid_var.set(self._unique_value)
         self.time_var.set(self._generated_at.strftime("%Y-%m-%d %H:%M:%S"))
