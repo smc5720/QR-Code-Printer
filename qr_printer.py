@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -435,11 +435,20 @@ class QRPrinterApp(tk.Tk):
         self._generated_at = None
         self._tk_img       = None
 
+        # 출력 상태 추적 (상품 전환 시 QR 재사용 방지용)
+        self._print_count   = 0       # 현재 QR이 몇 매 출력되었는지
+        self._last_print_at = None    # 마지막 출력 시각 (datetime)
+        self._print_history = []      # [{id, count, at}] · 최신이 앞, 최대 20건 (세션 내)
+
         self._build_ui()
         self._load_saved_texts()
         self._refresh_printers()
         self._generate()
+        # 가로 너비 600px 고정 (세로는 컨텐츠 높이에 맞춤)
+        self.update_idletasks()
+        self.geometry(f"600x{self.winfo_reqheight()}")
         self.after(1000, self._check_update_background)
+        self.after(30_000, self._refresh_warn_label)
 
     def _card(self, parent, title: str):
         return tk.LabelFrame(parent, text=f" {title} ",
@@ -578,6 +587,15 @@ class QRPrinterApp(tk.Tk):
         # ── QR 미리보기 ──
         qf = self._card(main, "QR 코드 미리보기")
         qf.pack(fill="both", expand=True, pady=(0, 10))
+
+        # 경고 배너 (출력 후 표시) — 상품 전환 시 실수 방지
+        self.warn_var = tk.StringVar(value="")
+        self.warn_label = tk.Label(qf, textvariable=self.warn_var,
+                                   bg="#FEF3C7", fg="#92400E",
+                                   font=("맑은 고딕", 9, "bold"),
+                                   anchor="w", padx=10, pady=6)
+        # 초기에는 숨김 (출력 후 _apply_print_state에서 pack)
+
         iq = tk.Frame(qf, bg=CARD, padx=10, pady=10)
         iq.pack()
         self.qr_label = tk.Label(iq, bg=CARD)
@@ -591,6 +609,13 @@ class QRPrinterApp(tk.Tk):
                  font=("맑은 고딕", 9), fg="#64748B").pack(side="left")
         tk.Label(uf, textvariable=self.uid_var, bg=CARD,
                  font=("Consolas", 10, "bold"), fg="#1E293B").pack(side="left", padx=4)
+        self.history_btn = tk.Button(uf, text="이력 보기",
+                                     command=self._show_history,
+                                     bg="#E2E8F0", fg="#1E293B",
+                                     font=("맑은 고딕", 8), relief="flat",
+                                     padx=6, cursor="hand2",
+                                     state="disabled")
+        self.history_btn.pack(side="right", padx=(6, 0))
         tk.Label(uf, textvariable=self.time_var, bg=CARD,
                  font=("맑은 고딕", 9), fg="#94A3B8").pack(side="right")
 
@@ -600,15 +625,16 @@ class QRPrinterApp(tk.Tk):
         bst = dict(font=("맑은 고딕", 11, "bold"),
                    relief="flat", padx=20, pady=8, cursor="hand2")
 
-        tk.Button(bf, text="⟳  새 QR 생성",
-                  command=self._generate,
-                  bg="#E2E8F0", fg="#1E293B", **bst
-                  ).pack(side="left", fill="x", expand=True, padx=(0, 4))
-        tk.Button(bf, text="🖨  프린터로 출력",
-                  command=self._print,
-                  bg=ACCENT, fg="white",
-                  activebackground="#1D4ED8", **bst
-                  ).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self._accent_color = ACCENT
+        self.generate_btn = tk.Button(bf, text="⟳  새 QR 생성",
+                                      command=self._generate,
+                                      bg="#E2E8F0", fg="#1E293B", **bst)
+        self.generate_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self.print_btn = tk.Button(bf, text="🖨  프린터로 출력",
+                                   command=self._print,
+                                   bg=ACCENT, fg="white",
+                                   activebackground="#1D4ED8", **bst)
+        self.print_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         self.status_var = tk.StringVar(value="준비")
         tk.Label(self, textvariable=self.status_var,
@@ -652,6 +678,18 @@ class QRPrinterApp(tk.Tk):
         size = cfg.get("font_size", 17)
         self.font_size_var.set(str(size))
         self.font_bold_var.set(bool(cfg.get("font_bold", False)))
+        # 출력 이력 (세션 간 영속)
+        self._print_history = []
+        for h in cfg.get("print_history", []):
+            try:
+                self._print_history.append({
+                    "id": str(h["id"]),
+                    "count": int(h["count"]),
+                    "at": datetime.datetime.fromisoformat(h["at"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue  # 손상된 엔트리는 조용히 스킵
+        del self._print_history[20:]
 
     def _save_texts(self):
         top, bottom = self._get_texts()
@@ -662,6 +700,10 @@ class QRPrinterApp(tk.Tk):
             "font_family": self.font_family_var.get(),
             "font_size": self._get_font_size(),
             "font_bold": self.font_bold_var.get(),
+            "print_history": [
+                {"id": h["id"], "count": h["count"], "at": h["at"].isoformat()}
+                for h in self._print_history
+            ],
         })
 
     def _get_font_size(self) -> int:
@@ -687,9 +729,13 @@ class QRPrinterApp(tk.Tk):
 
     def _generate(self):
         self._unique_value, self._generated_at = generate_unique_value()
+        # 새 QR은 아직 출력되지 않은 상태 → 경고/버튼 원복
+        self._print_count   = 0
+        self._last_print_at = None
         self._update_preview()
         self.uid_var.set(self._unique_value)
         self.time_var.set(self._generated_at.strftime("%Y-%m-%d %H:%M:%S"))
+        self._apply_print_state()
         self._set_status(f"QR 생성 완료 → {self._unique_value}")
 
     def _update_preview(self):
@@ -711,22 +757,58 @@ class QRPrinterApp(tk.Tk):
         self.qr_label.config(image=self._tk_img)
 
     def _print(self):
-        printer = self.printer_var.get()
-        if not printer:
-            messagebox.showwarning("프린터 없음", "출력할 프린터를 선택하세요.")
-            return
         if not self._unique_value:
             messagebox.showwarning("QR 없음", "먼저 QR 코드를 생성하세요.")
             return
 
+        copies = self._read_copies()
+
+        # 이미 출력된 QR을 다시 출력하려 하면 확인 — 상품 전환 시 실수 방지
+        if self._print_count > 0:
+            elapsed = self._format_elapsed(self._last_print_at)
+            answer = messagebox.askyesno(
+                "중복 출력 확인",
+                f"이 QR은 {elapsed}에 {self._print_count}매 출력되었습니다.\n\n"
+                f"같은 상품에 추가로 붙이시나요?\n"
+                f"다른 상품이면 '취소' 후 '새 QR 생성'을 눌러주세요.",
+                icon="warning", default="no")
+            if not answer:
+                self._set_status("출력 취소됨")
+                return
+
+        printer = self._do_print(self._unique_value, copies)
+        if printer is None:
+            return
+
+        # 상태 갱신
+        self._print_count  += copies
+        self._last_print_at = datetime.datetime.now()
+        self._push_history(self._unique_value, self._print_count, self._last_print_at)
+        self._apply_print_state()
+        self._set_status(f"✅ 출력 완료 → {printer} ({copies}매 · 누적 {self._print_count}매)")
+        messagebox.showinfo("출력 완료",
+                            f"QR 코드가 '{printer}' 로 {copies}매 전송되었습니다.\n"
+                            f"(이 QR 누적 {self._print_count}매)")
+
+    def _read_copies(self) -> int:
         try:
-            copies = max(1, int(self.quantity_var.get()))
+            return max(1, int(self.quantity_var.get()))
         except (TypeError, ValueError):
-            copies = 1
+            return 1
+
+    def _do_print(self, uid: str, copies: int):
+        """
+        지정한 uid로 실제 인쇄 작업 수행. 성공 시 printer 이름 반환, 실패 시 None.
+        호출자가 카운터/이력/UI 상태를 갱신하도록 책임 분리.
+        """
+        printer = self.printer_var.get()
+        if not printer:
+            messagebox.showwarning("프린터 없음", "출력할 프린터를 선택하세요.")
+            return None
 
         top, bottom = self._get_texts()
-        print_qr  = generate_qr_image(self._unique_value, box_size=20, border=6)
-        print_img = build_full_image(print_qr, self._unique_value, self._generated_at,
+        print_qr  = generate_qr_image(uid, box_size=20, border=6)
+        print_img = build_full_image(print_qr, uid, datetime.datetime.now(),
                                      top_text=top, bottom_text=bottom, scale=3.0,
                                      caption_family=self.font_family_var.get(),
                                      caption_size=self._get_font_size(),
@@ -737,18 +819,192 @@ class QRPrinterApp(tk.Tk):
             self._set_status(f"'{printer}' 로 {copies}매 출력 중...")
             self.update()
             print_image_win32(printer, print_img, copies=copies)
-            self._set_status(f"✅ 출력 완료 → {printer} ({copies}매)")
-            messagebox.showinfo("출력 완료",
-                                f"QR 코드가 '{printer}' 로 {copies}매 전송되었습니다.")
+            return printer
         except RuntimeError as e:
             messagebox.showerror("오류", str(e))
             self._set_status("❌ 출력 실패")
+            return None
         except Exception as e:
             messagebox.showerror("출력 오류", f"출력 중 오류가 발생했습니다\n{e}")
             self._set_status("❌ 출력 실패")
+            return None
 
     def _set_status(self, msg: str):
         self.status_var.set(f"  {msg}")
+
+    # ── 출력 상태/이력 ────────────────────────────
+    @staticmethod
+    def _format_elapsed(t) -> str:
+        """datetime → '방금 전' / 'N분 전' / 'N시간 전'."""
+        if t is None:
+            return "방금 전"
+        sec = int((datetime.datetime.now() - t).total_seconds())
+        if sec < 60:
+            return "방금 전"
+        if sec < 3600:
+            return f"{sec // 60}분 전"
+        return f"{sec // 3600}시간 전"
+
+    def _push_history(self, uid: str, count: int, at):
+        """출력 이력에 추가. 같은 ID가 있으면 업데이트. 최대 20건 유지. 디스크에 영속화."""
+        self._print_history = [h for h in self._print_history if h["id"] != uid]
+        self._print_history.insert(0, {"id": uid, "count": count, "at": at})
+        del self._print_history[20:]
+        self._save_texts()
+
+    def _apply_print_state(self):
+        """현재 _print_count에 맞춰 배너/버튼 상태 전환."""
+        has_print = self._print_count > 0
+        if has_print:
+            self._refresh_warn_label(schedule_next=False)
+            self.warn_label.pack(fill="x", padx=10, pady=(8, 0), before=self.qr_label.master)
+            # 출력 버튼 → 회색 '추가 출력'
+            self.print_btn.config(text="🖨  추가 출력",
+                                  bg="#E2E8F0", fg="#1E293B",
+                                  activebackground="#CBD5E1")
+            # 새 QR 버튼 → 파란색 강조
+            self.generate_btn.config(text="⟳  새 QR 생성",
+                                     bg=self._accent_color, fg="white",
+                                     activebackground="#1D4ED8")
+        else:
+            self.warn_label.pack_forget()
+            self.print_btn.config(text="🖨  프린터로 출력",
+                                  bg=self._accent_color, fg="white",
+                                  activebackground="#1D4ED8")
+            self.generate_btn.config(text="⟳  새 QR 생성",
+                                     bg="#E2E8F0", fg="#1E293B",
+                                     activebackground="#CBD5E1")
+        self.history_btn.config(state=("normal" if self._print_history else "disabled"))
+
+    def _refresh_warn_label(self, schedule_next: bool = True):
+        """배너의 '~분 전' 표시 주기적 갱신."""
+        if self._print_count > 0 and self._last_print_at is not None:
+            self.warn_var.set(
+                f"⚠ 이 QR은 이미 {self._print_count}매 출력됨 · "
+                f"{self._format_elapsed(self._last_print_at)}  —  "
+                f"다른 상품이면 반드시 '새 QR 생성'을 누르세요")
+        if schedule_next:
+            self.after(30_000, self._refresh_warn_label)
+
+    def _show_history(self):
+        """최근 출력 이력 팝업 (최대 20건). 선택 후 재출력 가능."""
+        if not self._print_history:
+            return
+        win = tk.Toplevel(self)
+        win.title("최근 출력 이력")
+        win.configure(bg="#F0F4F8")
+        win.transient(self)
+        if os.path.exists(self._icon_path):
+            try:
+                win.iconbitmap(self._icon_path)
+            except Exception:
+                pass
+
+        tk.Label(win, text="최근 출력 이력  (최대 20건 · 영구 저장)",
+                 bg="#F0F4F8", fg="#1E293B",
+                 font=("맑은 고딕", 10, "bold"),
+                 padx=12, pady=8).pack(fill="x")
+
+        tk.Label(win,
+                 text="※ 행을 선택하고 '재출력'을 누르면 현재 수량으로 다시 출력합니다. (더블클릭도 가능)",
+                 bg="#F0F4F8", fg="#64748B",
+                 font=("맑은 고딕", 8),
+                 padx=12).pack(fill="x", pady=(0, 4))
+
+        frame = tk.Frame(win, bg="#F0F4F8")
+        frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        tree = ttk.Treeview(frame, columns=("id", "count", "at"),
+                            show="headings", height=min(20, len(self._print_history)))
+        tree.heading("id", text="ID")
+        tree.heading("count", text="매수")
+        tree.heading("at", text="마지막 출력")
+        tree.column("id", width=200, anchor="w")
+        tree.column("count", width=60, anchor="center")
+        tree.column("at", width=150, anchor="center")
+        tree.pack(fill="both", expand=True)
+
+        self._populate_history_tree(tree)
+
+        # 행 iid를 uid로 지정했으므로 선택값 = uid
+        def do_reprint(_event=None):
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("선택 없음", "재출력할 이력을 먼저 선택하세요.", parent=win)
+                return
+            uid = sel[0]
+            self._reprint_from_history(uid, tree=tree, parent=win)
+
+        tree.bind("<Double-1>", do_reprint)
+
+        btns = tk.Frame(win, bg="#F0F4F8")
+        btns.pack(fill="x", padx=12, pady=(0, 10))
+        tk.Button(btns, text="🖨  재출력",
+                  command=do_reprint,
+                  bg=self._accent_color, fg="white",
+                  font=("맑은 고딕", 9, "bold"),
+                  relief="flat", padx=14, pady=5, cursor="hand2",
+                  activebackground="#1D4ED8"
+                  ).pack(side="left")
+        tk.Button(btns, text="닫기", command=win.destroy,
+                  bg="#E2E8F0", fg="#1E293B",
+                  font=("맑은 고딕", 9), relief="flat",
+                  padx=12, pady=5, cursor="hand2"
+                  ).pack(side="right")
+
+    def _populate_history_tree(self, tree):
+        """Treeview를 현재 _print_history 로 채움. iid=uid."""
+        for iid in tree.get_children():
+            tree.delete(iid)
+        for h in self._print_history:
+            tree.insert("", "end", iid=h["id"], values=(
+                h["id"], f"{h['count']}매",
+                h["at"].strftime("%Y-%m-%d %H:%M:%S"),
+            ))
+
+    def _reprint_from_history(self, uid: str, tree=None, parent=None):
+        """과거 이력의 QR을 현재 수량으로 재출력."""
+        entry = next((h for h in self._print_history if h["id"] == uid), None)
+        if entry is None:
+            return
+        copies = self._read_copies()
+        elapsed = self._format_elapsed(entry["at"])
+        answer = messagebox.askyesno(
+            "과거 QR 재출력",
+            f"선택한 과거 QR을 추가로 {copies}매 출력합니다.\n\n"
+            f"ID: {uid}\n"
+            f"기존 누적: {entry['count']}매 ({elapsed})\n\n"
+            f"계속하시겠습니까?",
+            icon="warning", default="no", parent=parent)
+        if not answer:
+            return
+
+        printer = self._do_print(uid, copies)
+        if printer is None:
+            return
+
+        new_count = entry["count"] + copies
+        now = datetime.datetime.now()
+        self._push_history(uid, new_count, now)
+
+        # 재출력한 ID가 현재 화면의 QR이면 메인 UI 상태도 동기화
+        if uid == self._unique_value:
+            self._print_count   = new_count
+            self._last_print_at = now
+            self._apply_print_state()
+        else:
+            # 이력 버튼 활성 유지 (이력 비어있지 않음)
+            self.history_btn.config(state="normal")
+
+        if tree is not None and tree.winfo_exists():
+            self._populate_history_tree(tree)
+
+        self._set_status(f"✅ 과거 QR 재출력 → {printer} ({copies}매)")
+        messagebox.showinfo("재출력 완료",
+                            f"과거 QR을 {copies}매 재출력했습니다.\n"
+                            f"ID: {uid}\n"
+                            f"해당 QR 누적: {new_count}매",
+                            parent=parent)
 
     # ── 자동 업데이트 ─────────────────────────────
     def _check_update_background(self):
