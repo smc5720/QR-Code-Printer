@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -66,18 +66,27 @@ def check_for_update():
 
 
 def _find_asset_url(assets: list):
-    """현재 실행 형태(.exe / .py)에 맞는 에셋 URL 반환."""
+    """현재 실행 형태(.exe / .py)에 맞는 에셋 URL, 이름, 크기 반환."""
     is_exe = getattr(sys, "frozen", False)
     target_ext = ".exe" if is_exe else ".py"
     for a in assets:
         if a["name"].lower().endswith(target_ext):
-            return a["browser_download_url"], a["name"]
+            return a["browser_download_url"], a["name"], a.get("size", 0)
     if assets:
-        return assets[0]["browser_download_url"], assets[0]["name"]
-    return None, None
+        return assets[0]["browser_download_url"], assets[0]["name"], assets[0].get("size", 0)
+    return None, None, 0
 
 
-def download_file(url: str, dest: str, progress_cb=None):
+def _remove_zone_identifier(filepath: str):
+    """Windows Zone.Identifier ADS를 제거하여 SmartScreen/Defender 차단 방지."""
+    try:
+        import ctypes
+        ctypes.windll.kernel32.DeleteFileW(filepath + ":Zone.Identifier")
+    except Exception:
+        pass
+
+
+def download_file(url: str, dest: str, progress_cb=None, expected_size: int = 0):
     """URL → dest 다운로드. progress_cb(downloaded, total) 호출."""
     req = urllib.request.Request(url, headers={"User-Agent": "QR-Code-Printer"})
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -97,11 +106,16 @@ def download_file(url: str, dest: str, progress_cb=None):
     if total > 0 and actual_size != total:
         os.unlink(dest)
         raise RuntimeError(f"다운로드 불완전: {actual_size}/{total} bytes")
+    if expected_size > 0 and actual_size != expected_size:
+        os.unlink(dest)
+        raise RuntimeError(f"파일 크기 불일치: {actual_size}/{expected_size} bytes")
     if dest.lower().endswith((".exe", ".exe.new")):
         with open(dest, "rb") as f:
             if f.read(2) != b"MZ":
                 os.unlink(dest)
                 raise RuntimeError("다운로드된 파일이 유효한 실행 파일이 아닙니다.")
+    # Zone.Identifier ADS 제거 (Windows Defender/SmartScreen 차단 방지)
+    _remove_zone_identifier(dest)
 
 
 def apply_update(new_file_path: str):
@@ -111,15 +125,28 @@ def apply_update(new_file_path: str):
 
     if is_exe:
         # exe는 실행 중 잠김 → 배치 스크립트로 교체 후 재실행
+        new_size = os.path.getsize(new_file_path)
         bat = current + ".update.bat"
         with open(bat, "w", encoding="utf-8") as f:
-            f.write(f'@echo off\n'
-                    f':wait_loop\n'
-                    f'timeout /t 1 /nobreak >nul\n'
-                    f'move /y "{new_file_path}" "{current}" >nul 2>&1\n'
-                    f'if errorlevel 1 goto wait_loop\n'
-                    f'start "" "{current}"\n'
-                    f'del "%~f0"\n')
+            f.write(
+                f'@echo off\n'
+                f'setlocal\n'
+                f'set "RETRIES=0"\n'
+                f':wait_loop\n'
+                f'timeout /t 1 /nobreak >nul\n'
+                f'set /a RETRIES+=1\n'
+                f'if %RETRIES% GTR 30 (\n'
+                f'    del "{new_file_path}" >nul 2>&1\n'
+                f'    del "%~f0"\n'
+                f'    exit /b 1\n'
+                f')\n'
+                f'move /y "{new_file_path}" "{current}" >nul 2>&1\n'
+                f'if errorlevel 1 goto wait_loop\n'
+                f'del /f "{current}:Zone.Identifier" >nul 2>&1\n'
+                f'timeout /t 1 /nobreak >nul\n'
+                f'start "" "{current}"\n'
+                f'del "%~f0"\n'
+            )
         subprocess.Popen(["cmd", "/c", bat],
                          creationflags=subprocess.CREATE_NO_WINDOW)
         sys.exit(0)
@@ -613,7 +640,7 @@ class QRPrinterApp(tk.Tk):
 
     def _perform_update(self, info):
         """다운로드 진행률 표시 → 파일 교체 → 재시작."""
-        url, name = _find_asset_url(info["assets"])
+        url, name, expected_size = _find_asset_url(info["assets"])
         if not url:
             messagebox.showerror("업데이트 오류",
                                  "다운로드 가능한 파일을 찾을 수 없습니다.\n"
@@ -643,7 +670,16 @@ class QRPrinterApp(tk.Tk):
         pct_lbl.pack(pady=(6, 0))
 
         ext = ".exe" if getattr(sys, "frozen", False) else ".py"
-        dest = os.path.join(tempfile.gettempdir(), f"QR-Code-Printer-update{ext}")
+        # 같은 디렉토리에 다운로드 → move가 원자적 rename이 되도록 함
+        current_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        dest = os.path.join(current_dir, f"QR-Code-Printer-update{ext}")
+        try:
+            test_path = os.path.join(current_dir, ".update_test")
+            with open(test_path, "w") as tf:
+                tf.write("test")
+            os.unlink(test_path)
+        except OSError:
+            dest = os.path.join(tempfile.gettempdir(), f"QR-Code-Printer-update{ext}")
 
         def _on_progress(downloaded, total):
             pct = int(downloaded / total * 100)
@@ -654,7 +690,7 @@ class QRPrinterApp(tk.Tk):
 
         def _download():
             try:
-                download_file(url, dest, _on_progress)
+                download_file(url, dest, _on_progress, expected_size)
                 self.after(0, lambda: _done(dlg))
             except Exception as e:
                 self.after(0, lambda: _error(dlg, str(e)))
