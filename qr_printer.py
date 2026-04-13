@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -324,9 +324,11 @@ def get_printers():
     return ["(pywin32 미설치 - 가상 프린터)", "Microsoft Print to PDF"]
 
 
-def print_image_win32(printer_name: str, img: Image.Image):
+def print_image_win32(printer_name: str, img: Image.Image, copies: int = 1):
     if not WIN32_AVAILABLE:
         raise RuntimeError("pywin32가 설치되어 있지 않습니다.\npip install pywin32 를 실행하세요.")
+
+    copies = max(1, int(copies))
 
     with tempfile.NamedTemporaryFile(suffix=".bmp", delete=False) as tmp:
         tmp_path = tmp.name
@@ -338,7 +340,6 @@ def print_image_win32(printer_name: str, img: Image.Image):
             hdc = win32ui.CreateDC()
             hdc.CreatePrinterDC(printer_name)
             hdc.StartDoc("QR Code")
-            hdc.StartPage()
 
             px = hdc.GetDeviceCaps(win32con.HORZRES)
             py = hdc.GetDeviceCaps(win32con.VERTRES)
@@ -350,9 +351,11 @@ def print_image_win32(printer_name: str, img: Image.Image):
             yo = int(py * 0.05)
 
             dib = ImageWin.Dib(img)
-            dib.draw(hdc.GetHandleOutput(), (xo, yo, xo + dw, yo + dh))
+            for _ in range(copies):
+                hdc.StartPage()
+                dib.draw(hdc.GetHandleOutput(), (xo, yo, xo + dw, yo + dh))
+                hdc.EndPage()
 
-            hdc.EndPage()
             hdc.EndDoc()
             hdc.DeleteDC()
         finally:
@@ -494,6 +497,18 @@ class QRPrinterApp(tk.Tk):
                        value="landscape", command=self._on_orientation_change,
                        bg=CARD, font=("맑은 고딕", 9), cursor="hand2"
                        ).pack(side="left", padx=(4, 0))
+
+        tk.Label(io, text="수량",
+                 bg=CARD, font=("맑은 고딕", 9, "bold"), fg="#475569"
+                 ).pack(side="left", padx=(20, 0))
+        self.quantity_var = tk.StringVar(value="1")
+        tk.Spinbox(io, from_=1, to=999, textvariable=self.quantity_var,
+                   width=6, font=("맑은 고딕", 10), justify="center",
+                   relief="solid", bd=1
+                   ).pack(side="left", padx=(8, 0))
+        tk.Label(io, text="매",
+                 bg=CARD, font=("맑은 고딕", 9), fg="#64748B"
+                 ).pack(side="left", padx=(4, 0))
 
         # ── 문구 설정 ──
         lf = self._card(main, "문구 설정")
@@ -704,6 +719,11 @@ class QRPrinterApp(tk.Tk):
             messagebox.showwarning("QR 없음", "먼저 QR 코드를 생성하세요.")
             return
 
+        try:
+            copies = max(1, int(self.quantity_var.get()))
+        except (TypeError, ValueError):
+            copies = 1
+
         top, bottom = self._get_texts()
         print_qr  = generate_qr_image(self._unique_value, box_size=20, border=6)
         print_img = build_full_image(print_qr, self._unique_value, self._generated_at,
@@ -714,13 +734,12 @@ class QRPrinterApp(tk.Tk):
         if self.orientation_var.get() == "landscape":
             print_img = print_img.rotate(-90, expand=True)
         try:
-            self._set_status(f"'{printer}' 로 출력 중...")
+            self._set_status(f"'{printer}' 로 {copies}매 출력 중...")
             self.update()
-            print_image_win32(printer, print_img)
-            self._set_status(f"✅ 출력 완료 → {printer}")
-            messagebox.showinfo("출력 완료", f"QR 코드가 '{printer}' 로 전송되었습니다.")
-            # 같은 QR이 중복 출력되지 않도록 성공 시 새 QR 생성
-            self._generate()
+            print_image_win32(printer, print_img, copies=copies)
+            self._set_status(f"✅ 출력 완료 → {printer} ({copies}매)")
+            messagebox.showinfo("출력 완료",
+                                f"QR 코드가 '{printer}' 로 {copies}매 전송되었습니다.")
         except RuntimeError as e:
             messagebox.showerror("오류", str(e))
             self._set_status("❌ 출력 실패")
