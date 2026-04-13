@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -194,12 +194,19 @@ def load_font(size: int, family: str = DEFAULT_FONT_FAMILY, bold: bool = False):
 #  핵심 로직
 # ──────────────────────────────────────────────
 
+_BASE36_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
 def generate_unique_value():
-    """현재 시간 기반 고유값 생성"""
+    """현재 시간(epoch μs) 기반 고유값을 대문자 Base36으로 인코딩. 최소 10자 보장."""
     now = datetime.datetime.now()
-    time_str = now.strftime("%Y%m%d-%H%M%S")
-    micro = str(now.microsecond).zfill(6)[:6]
-    return f"{time_str}-{micro}", now
+    n = int(now.timestamp() * 1_000_000)
+    out = []
+    while n > 0:
+        n, r = divmod(n, 36)
+        out.append(_BASE36_ALPHABET[r])
+    # 2085년까지 자연스럽게 10자, 이후 11자. zfill로 초기값·이상 시계 상황에도 10자 하한 보장.
+    return "".join(reversed(out)).zfill(10), now
 
 
 def generate_qr_image(data: str, box_size: int = 10, border: int = 4) -> Image.Image:
