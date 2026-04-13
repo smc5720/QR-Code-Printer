@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.2.3"
+VERSION = "1.3.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -463,6 +463,22 @@ class QRPrinterApp(tk.Tk):
                   padx=8, cursor="hand2"
                   ).pack(side="left", padx=(6, 0))
 
+        # 출력 방향
+        io = tk.Frame(pf, bg=CARD, padx=10, pady=(0, 8))
+        io.pack(fill="x")
+        tk.Label(io, text="출력 방향",
+                 bg=CARD, font=("맑은 고딕", 9, "bold"), fg="#475569"
+                 ).pack(side="left")
+        self.orientation_var = tk.StringVar(value="portrait")
+        tk.Radiobutton(io, text="세로", variable=self.orientation_var,
+                       value="portrait", command=self._on_orientation_change,
+                       bg=CARD, font=("맑은 고딕", 9), cursor="hand2"
+                       ).pack(side="left", padx=(10, 0))
+        tk.Radiobutton(io, text="가로", variable=self.orientation_var,
+                       value="landscape", command=self._on_orientation_change,
+                       bg=CARD, font=("맑은 고딕", 9), cursor="hand2"
+                       ).pack(side="left", padx=(4, 0))
+
         # ── 문구 설정 ──
         lf = self._card(main, "문구 설정")
         lf.pack(fill="x", pady=(0, 10))
@@ -555,16 +571,28 @@ class QRPrinterApp(tk.Tk):
         cfg = load_config()
         top = cfg.get("top_text", "")
         bottom = cfg.get("bottom_text", "")
+        orientation = cfg.get("orientation", "portrait")
         if top:
             self.top_text.insert("1.0", top)
         if bottom:
             self.bottom_text.insert("1.0", bottom)
+        if orientation in ("portrait", "landscape"):
+            self.orientation_var.set(orientation)
 
     def _save_texts(self):
         top, bottom = self._get_texts()
-        save_config({"top_text": top, "bottom_text": bottom})
+        save_config({
+            "top_text": top,
+            "bottom_text": bottom,
+            "orientation": self.orientation_var.get(),
+        })
 
     def _on_text_change(self):
+        self._save_texts()
+        if self._unique_value:
+            self._update_preview()
+
+    def _on_orientation_change(self):
         self._save_texts()
         if self._unique_value:
             self._update_preview()
@@ -581,6 +609,8 @@ class QRPrinterApp(tk.Tk):
         qr_img = generate_qr_image(self._unique_value, box_size=6, border=3)
         full   = build_full_image(qr_img, self._unique_value, self._generated_at,
                                   top_text=top, bottom_text=bottom, scale=1.0)
+        if self.orientation_var.get() == "landscape":
+            full = full.rotate(-90, expand=True)
 
         max_w, max_h = 300, 420
         ratio   = min(max_w / full.width, max_h / full.height, 1.0)
@@ -602,6 +632,8 @@ class QRPrinterApp(tk.Tk):
         print_qr  = generate_qr_image(self._unique_value, box_size=20, border=6)
         print_img = build_full_image(print_qr, self._unique_value, self._generated_at,
                                      top_text=top, bottom_text=bottom, scale=3.0)
+        if self.orientation_var.get() == "landscape":
+            print_img = print_img.rotate(-90, expand=True)
         try:
             self._set_status(f"'{printer}' 로 출력 중...")
             self.update()
