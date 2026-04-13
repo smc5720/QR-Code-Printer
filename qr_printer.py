@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -640,6 +640,8 @@ class QRPrinterApp(tk.Tk):
             print_image_win32(printer, print_img)
             self._set_status(f"✅ 출력 완료 → {printer}")
             messagebox.showinfo("출력 완료", f"QR 코드가 '{printer}' 로 전송되었습니다.")
+            # 같은 QR이 중복 출력되지 않도록 성공 시 새 QR 생성
+            self._generate()
         except RuntimeError as e:
             messagebox.showerror("오류", str(e))
             self._set_status("❌ 출력 실패")
