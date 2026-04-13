@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -311,6 +311,18 @@ def print_image_win32(printer_name: str, img: Image.Image):
 # ──────────────────────────────────────────────
 
 def _config_path():
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        base = os.path.join(local_app_data, "QR-Code-Printer")
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, "qr_printer_config.json")
+    # 폴백: 실행 파일과 같은 디렉토리
+    base = os.path.dirname(os.path.abspath(sys.argv[0]))
+    return os.path.join(base, "qr_printer_config.json")
+
+
+def _legacy_config_path():
+    """기존 버전 호환: 실행 파일 옆 설정 파일 경로."""
     base = os.path.dirname(os.path.abspath(sys.argv[0]))
     return os.path.join(base, "qr_printer_config.json")
 
@@ -321,6 +333,17 @@ def load_config():
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
+        except Exception:
+            pass
+    # 기존 위치에서 마이그레이션
+    legacy = _legacy_config_path()
+    if legacy != path and os.path.exists(legacy):
+        try:
+            with open(legacy, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            save_config(data)
+            os.remove(legacy)
+            return data
         except Exception:
             pass
     return {}
