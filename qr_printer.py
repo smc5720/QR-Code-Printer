@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -464,8 +464,8 @@ class QRPrinterApp(tk.Tk):
                   ).pack(side="left", padx=(6, 0))
 
         # 출력 방향
-        io = tk.Frame(pf, bg=CARD, padx=10, pady=(0, 8))
-        io.pack(fill="x")
+        io = tk.Frame(pf, bg=CARD, padx=10)
+        io.pack(fill="x", pady=(0, 8))
         tk.Label(io, text="출력 방향",
                  bg=CARD, font=("맑은 고딕", 9, "bold"), fg="#475569"
                  ).pack(side="left")
