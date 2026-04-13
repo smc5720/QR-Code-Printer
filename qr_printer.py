@@ -20,7 +20,7 @@ import threading
 import subprocess
 import urllib.request
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 # Windows 프린터 관련 (pywin32)
@@ -80,7 +80,7 @@ def _find_asset_url(assets: list):
 def download_file(url: str, dest: str, progress_cb=None):
     """URL → dest 다운로드. progress_cb(downloaded, total) 호출."""
     req = urllib.request.Request(url, headers={"User-Agent": "QR-Code-Printer"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=60) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         downloaded = 0
         with open(dest, "wb") as f:
@@ -92,6 +92,16 @@ def download_file(url: str, dest: str, progress_cb=None):
                 downloaded += len(chunk)
                 if progress_cb and total > 0:
                     progress_cb(downloaded, total)
+    # 다운로드 검증
+    actual_size = os.path.getsize(dest)
+    if total > 0 and actual_size != total:
+        os.unlink(dest)
+        raise RuntimeError(f"다운로드 불완전: {actual_size}/{total} bytes")
+    if dest.lower().endswith((".exe", ".exe.new")):
+        with open(dest, "rb") as f:
+            if f.read(2) != b"MZ":
+                os.unlink(dest)
+                raise RuntimeError("다운로드된 파일이 유효한 실행 파일이 아닙니다.")
 
 
 def apply_update(new_file_path: str):
@@ -104,8 +114,10 @@ def apply_update(new_file_path: str):
         bat = current + ".update.bat"
         with open(bat, "w", encoding="utf-8") as f:
             f.write(f'@echo off\n'
-                    f'timeout /t 2 /nobreak >nul\n'
-                    f'move /y "{new_file_path}" "{current}"\n'
+                    f':wait_loop\n'
+                    f'timeout /t 1 /nobreak >nul\n'
+                    f'move /y "{new_file_path}" "{current}" >nul 2>&1\n'
+                    f'if errorlevel 1 goto wait_loop\n'
                     f'start "" "{current}"\n'
                     f'del "%~f0"\n')
         subprocess.Popen(["cmd", "/c", bat],
@@ -630,7 +642,8 @@ class QRPrinterApp(tk.Tk):
                            font=("맑은 고딕", 9), bg="#FFFFFF", fg="#64748B")
         pct_lbl.pack(pady=(6, 0))
 
-        dest = os.path.abspath(sys.argv[0]) + ".new"
+        ext = ".exe" if getattr(sys, "frozen", False) else ".py"
+        dest = os.path.join(tempfile.gettempdir(), f"QR-Code-Printer-update{ext}")
 
         def _on_progress(downloaded, total):
             pct = int(downloaded / total * 100)
