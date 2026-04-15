@@ -23,6 +23,20 @@ jobs:
       - name: Install dependencies
         run: pip install qrcode[pil] pillow pywin32 pyinstaller
 
+      - name: Inject API key
+        if: env.QR_PRINTER_API_KEY != ''
+        env:
+          QR_PRINTER_API_KEY: ${{ secrets.QR_PRINTER_API_KEY }}
+        shell: python
+        run: |
+          import os
+          key = os.environ["QR_PRINTER_API_KEY"]
+          with open("qr_printer.py", "r", encoding="utf-8") as f:
+              content = f.read()
+          content = content.replace('API_KEY = ""', f'API_KEY = "{key}"', 1)
+          with open("qr_printer.py", "w", encoding="utf-8") as f:
+              f.write(content)
+
       - name: Build exe
         run: pyinstaller --onefile --windowed --icon=icon.ico --add-data "icon.ico;." --name QR-Code-Printer qr_printer.py
 

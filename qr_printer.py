@@ -16,12 +16,18 @@ import os
 import sys
 import json
 import tempfile
+import time
 import threading
 import subprocess
 import urllib.request
+import urllib.error
 
 VERSION = "1.7.1"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
+
+API_BASE_URL = "https://kfrental.com"
+API_KEY = ""  # GitHub Actions 빌드 시 주입
+API_MAX_RETRIES = 5
 
 # Windows 프린터 관련 (pywin32)
 try:
@@ -423,6 +429,61 @@ def save_config(data):
 
 
 # ──────────────────────────────────────────────
+#  API 클라이언트
+# ──────────────────────────────────────────────
+
+class DuplicateCodeError(Exception):
+    """서버에서 중복 코드 응답 (409 PENDING_CODE_ALREADY_EXISTS)."""
+    pass
+
+
+def _resolve_api_key() -> str:
+    """API 키 우선순위: 소스 상수 → 설정 파일 → 환경 변수. 없으면 빈 문자열."""
+    if API_KEY:
+        return API_KEY
+    cfg = load_config()
+    key = cfg.get("api_key", "")
+    if key:
+        return key
+    return os.environ.get("QR_PRINTER_API_KEY", "")
+
+
+def api_check_code(product_code: str, api_key: str) -> dict:
+    """
+    GET /api/stocks/pending/check — 코드 중복 확인.
+    반환: {"exists": bool, "location": str|None}
+    """
+    url = f"{API_BASE_URL}/api/stocks/pending/check?productCode={product_code}"
+    req = urllib.request.Request(url, headers={
+        "X-API-Key": api_key,
+        "User-Agent": "QR-Code-Printer",
+    })
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode())
+
+
+def api_register_code(product_code: str, api_key: str) -> dict:
+    """
+    POST /api/stocks/pending — 대기열 등록.
+    201 → 성공 dict, 409 → DuplicateCodeError.
+    """
+    url = f"{API_BASE_URL}/api/stocks/pending"
+    body = json.dumps({"productCode": product_code}).encode()
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+        "User-Agent": "QR-Code-Printer",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            raise DuplicateCodeError("이미 대기열에 등록된 상품 코드입니다.")
+        raise
+
+
+# ──────────────────────────────────────────────
 #  GUI
 # ──────────────────────────────────────────────
 
@@ -783,20 +844,142 @@ class QRPrinterApp(tk.Tk):
             if not answer:
                 self._set_status("출력 취소됨")
                 return
-
-        printer = self._do_print(self._unique_value, copies)
-        if printer is None:
+            self._execute_print_and_update(self._unique_value, copies)
             return
 
-        # 상태 갱신
+        # 최초 출력: API 연동
+        api_key = _resolve_api_key()
+        if api_key:
+            self._print_with_api_check(copies, api_key)
+        else:
+            self._execute_print_and_update(self._unique_value, copies)
+
+    def _execute_print_and_update(self, uid: str, copies: int):
+        """_do_print 실행 후 상태·이력·UI 갱신. API 성공 콜백과 직접 출력 경로에서 공유."""
+        printer = self._do_print(uid, copies)
+        if printer is None:
+            return
         self._print_count  += copies
         self._last_print_at = datetime.datetime.now()
-        self._push_history(self._unique_value, self._print_count, self._last_print_at)
+        self._push_history(uid, self._print_count, self._last_print_at)
         self._apply_print_state()
         self._set_status(f"✅ 출력 완료 → {printer} ({copies}매 · 누적 {self._print_count}매)")
         messagebox.showinfo("출력 완료",
                             f"QR 코드가 '{printer}' 로 {copies}매 전송되었습니다.\n"
                             f"(이 QR 누적 {self._print_count}매)")
+
+    def _print_with_api_check(self, copies: int, api_key: str):
+        """코드 중복 확인 → 대기열 등록 → 출력. 모달 진행 다이얼로그에서 실행."""
+        dlg = tk.Toplevel(self)
+        dlg.title("QR 등록 중...")
+        dlg.resizable(False, False)
+        dlg.configure(bg="#FFFFFF")
+        if os.path.exists(self._icon_path):
+            try:
+                dlg.iconbitmap(self._icon_path)
+            except Exception:
+                pass
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        dw, dh = 340, 130
+        x = self.winfo_x() + (self.winfo_width() - dw) // 2
+        y = self.winfo_y() + (self.winfo_height() - dh) // 2
+        dlg.geometry(f"{dw}x{dh}+{x}+{y}")
+
+        step_var = tk.StringVar(value="코드 확인 중...")
+        tk.Label(dlg, textvariable=step_var,
+                 font=("맑은 고딕", 10), bg="#FFFFFF").pack(pady=(18, 4))
+        retry_var = tk.StringVar(value="")
+        tk.Label(dlg, textvariable=retry_var,
+                 font=("맑은 고딕", 9), bg="#FFFFFF", fg="#64748B").pack(pady=(0, 8))
+        bar = ttk.Progressbar(dlg, length=280, mode="indeterminate")
+        bar.pack()
+        bar.start(15)
+
+        def _update_code(code, generated_at):
+            self._unique_value = code
+            self._generated_at = generated_at
+            self._print_count = 0
+            self._last_print_at = None
+            self.uid_var.set(code)
+            self.time_var.set(generated_at.strftime("%Y-%m-%d %H:%M:%S"))
+            self._update_preview()
+
+        def _on_api_success(code, cps):
+            dlg.destroy()
+            self._execute_print_and_update(code, cps)
+
+        def _on_network_error(error_msg, cps):
+            dlg.destroy()
+            answer = messagebox.askyesno(
+                "서버 연결 오류",
+                f"서버에 연결할 수 없습니다.\n\n"
+                f"오류: {error_msg}\n\n"
+                f"등록 없이 출력하시겠습니까?\n"
+                f"(나중에 수동 등록이 필요할 수 있습니다)",
+                icon="warning")
+            if answer:
+                self._execute_print_and_update(self._unique_value, cps)
+            else:
+                self._set_status("출력 취소됨")
+
+        def _on_max_retries():
+            dlg.destroy()
+            messagebox.showerror(
+                "코드 생성 실패",
+                f"코드가 {API_MAX_RETRIES}회 연속 중복되었습니다.\n"
+                f"잠시 후 다시 시도해 주세요.")
+            self._set_status("❌ 코드 중복 초과")
+
+        def _worker():
+            current_code = self._unique_value
+
+            for attempt in range(1, API_MAX_RETRIES + 1):
+                if attempt > 1:
+                    self.after(0, lambda a=attempt: (
+                        step_var.set("코드 확인 중..."),
+                        retry_var.set(f"코드 중복 — 새 코드로 재시도 ({a}/{API_MAX_RETRIES})"),
+                    ))
+
+                # 1) 중복 확인
+                try:
+                    result = api_check_code(current_code, api_key)
+                except Exception as e:
+                    self.after(0, lambda msg=str(e): _on_network_error(msg, copies))
+                    return
+
+                if result.get("exists"):
+                    current_code, gen_at = generate_unique_value()
+                    self.after(0, lambda c=current_code, t=gen_at: _update_code(c, t))
+                    continue
+
+                self.after(0, lambda: step_var.set("✓ 코드 중복 확인 완료"))
+                time.sleep(0.5)
+
+                # 2) 대기열 등록
+                self.after(0, lambda: step_var.set("대기열 등록 중..."))
+                try:
+                    api_register_code(current_code, api_key)
+                except DuplicateCodeError:
+                    current_code, gen_at = generate_unique_value()
+                    self.after(0, lambda c=current_code, t=gen_at: _update_code(c, t))
+                    continue
+                except Exception as e:
+                    self.after(0, lambda msg=str(e): _on_network_error(msg, copies))
+                    return
+
+                self.after(0, lambda: step_var.set("✓ 대기열 등록 완료"))
+                time.sleep(0.5)
+
+                # 성공
+                self.after(0, lambda c=current_code: _on_api_success(c, copies))
+                return
+
+            # 재시도 초과
+            self.after(0, _on_max_retries)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _read_copies(self) -> int:
         try:
