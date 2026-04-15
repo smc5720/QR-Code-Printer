@@ -22,7 +22,7 @@ import subprocess
 import urllib.request
 import urllib.error
 
-VERSION = "1.7.1"
+VERSION = "1.8.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 API_BASE_URL = "https://kfrental.com"
@@ -437,6 +437,11 @@ class DuplicateCodeError(Exception):
     pass
 
 
+class InvalidApiKeyError(Exception):
+    """API 키 인증 실패 (401 INVALID_API_KEY)."""
+    pass
+
+
 def _resolve_api_key() -> str:
     """API 키 우선순위: 소스 상수 → 설정 파일 → 환경 변수. 없으면 빈 문자열."""
     if API_KEY:
@@ -458,8 +463,13 @@ def api_check_code(product_code: str, api_key: str) -> dict:
         "X-API-Key": api_key,
         "User-Agent": "QR-Code-Printer",
     })
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise InvalidApiKeyError("API 키가 유효하지 않습니다.")
+        raise
 
 
 def api_register_code(product_code: str, api_key: str) -> dict:
@@ -478,6 +488,8 @@ def api_register_code(product_code: str, api_key: str) -> dict:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise InvalidApiKeyError("API 키가 유효하지 않습니다.")
         if e.code == 409:
             raise DuplicateCodeError("이미 대기열에 등록된 상품 코드입니다.")
         raise
@@ -924,6 +936,19 @@ class QRPrinterApp(tk.Tk):
             else:
                 self._set_status("출력 취소됨")
 
+        def _on_invalid_api_key(cps):
+            dlg.destroy()
+            answer = messagebox.askyesno(
+                "API 키 오류",
+                "API 키가 유효하지 않습니다.\n\n"
+                "등록 없이 출력하시겠습니까?\n"
+                "(나중에 수동 등록이 필요할 수 있습니다)",
+                icon="warning")
+            if answer:
+                self._execute_print_and_update(self._unique_value, cps)
+            else:
+                self._set_status("출력 취소됨")
+
         def _on_max_retries():
             dlg.destroy()
             messagebox.showerror(
@@ -945,6 +970,9 @@ class QRPrinterApp(tk.Tk):
                 # 1) 중복 확인
                 try:
                     result = api_check_code(current_code, api_key)
+                except InvalidApiKeyError:
+                    self.after(0, lambda: _on_invalid_api_key(copies))
+                    return
                 except Exception as e:
                     self.after(0, lambda msg=str(e): _on_network_error(msg, copies))
                     return
@@ -961,6 +989,9 @@ class QRPrinterApp(tk.Tk):
                 self.after(0, lambda: step_var.set("대기열 등록 중..."))
                 try:
                     api_register_code(current_code, api_key)
+                except InvalidApiKeyError:
+                    self.after(0, lambda: _on_invalid_api_key(copies))
+                    return
                 except DuplicateCodeError:
                     current_code, gen_at = generate_unique_value()
                     self.after(0, lambda c=current_code, t=gen_at: _update_code(c, t))
