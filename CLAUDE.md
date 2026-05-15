@@ -57,12 +57,12 @@ git push origin v1.7.1
 | 고유값/QR/이미지 생성 | 198-321 | Base36 고유값 생성, QR 렌더링, 상단/하단 문구 레이아웃 합성 |
 | 프린터 | 324-376 | Win32 프린터 열거 및 인쇄 (copies 파라미터로 N매 인쇄) |
 | 설정 | 379-427 | JSON 기반 config (`%LOCALAPPDATA%\QR-Code-Printer\qr_printer_config.json`) + 구 경로 마이그레이션 |
-| API 클라이언트 | 430-484 | 코드 중복 확인(`api_check_code`), 대기열 등록(`api_register_code`), API 키 해석 |
-| GUI | 488-1303 | `QRPrinterApp(tk.Tk)` — 미리보기·프린터 선택·폰트/수량/방향·경고 배너·이력 팝업·API 연동 출력·자동 업데이트 |
+| API 클라이언트 | 430-505 | 코드 중복 확인(`api_check_code`), 대기열 등록(`api_register_code`), prefix 검색(`api_search_codes`), API 키 해석 |
+| GUI | 509-1480 | `QRPrinterApp(tk.Tk)` — 미리보기·프린터 선택·폰트/수량/방향·경고 배너·이력 팝업·서버 검색 재출력·API 연동 출력·자동 업데이트 |
 
 ## 주요 규칙
 
-- `VERSION` 상수(현재 `"1.7.1"`)는 릴리즈 태그와 반드시 일치해야 함
+- `VERSION` 상수(현재 `"1.9.0"`)는 릴리즈 태그와 반드시 일치해야 함
 - 설정 파일: `%LOCALAPPDATA%\QR-Code-Printer\qr_printer_config.json` (구 버전의 실행 파일 옆 경로에서 자동 마이그레이션됨)
 - 고유값 형식: **epoch μs → Base36 대문자 (`zfill(10)` 로 최소 10자 보장)**. 예: `HHK7JCTL6N`
   - 2085년까지 자연스럽게 10자 유지, 이후 11자
@@ -80,6 +80,7 @@ git push origin v1.7.1
 
 - **최초 출력 (API 연동)**: `_print()` → `_print_with_api_check()` → 모달 다이얼로그에서 백그라운드 스레드로 코드 중복 확인(`GET check`) → 대기열 등록(`POST register`) → 성공 후 `_execute_print_and_update()` 로 인쇄. 중복 시 자동 재생성 + 재시도 (최대 5회). 네트워크 오류 시 경고 후 등록 없이 출력 허용
 - **추가 출력/이력 재출력**: API 호출 없이 기존대로 바로 인쇄 (`_execute_print_and_update`, `_reprint_from_history`)
+- **서버 검색 재출력**: "🔍 서버 검색" 버튼 → `_show_server_search()` 모달에서 prefix 입력 (3자↑ → 300ms debounce → `GET /api/stocks/pending/search`) → 결과 선택 → `_reprint_from_search()` 로 인쇄 + 로컬 이력 추가. API 키 없으면 버튼 클릭 시 오류 메시지
 - **출력 상태 추적** (`_print_count`, `_last_print_at`): 출력 후 경고 배너 + "추가 출력"으로 버튼 전환 → 상품 전환 시 동일 QR 재사용 방지
 - **재출력 확인**: 이미 출력된 QR을 다시 출력하려 하면 `messagebox.askyesno` 로 의도 확인
 - **출력 이력** (`_print_history`): 최근 20건 config에 영속화. 팝업(`_show_history`)에서 선택 → 재출력 가능 (`_reprint_from_history`)

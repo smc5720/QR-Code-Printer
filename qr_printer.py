@@ -21,8 +21,9 @@ import threading
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 GITHUB_REPO = "smc5720/QR-Code-Printer"
 
 API_BASE_URL = "https://kfrental.com"
@@ -472,6 +473,26 @@ def api_check_code(product_code: str, api_key: str) -> dict:
         raise
 
 
+def api_search_codes(query: str, api_key: str) -> list:
+    """
+    GET /api/stocks/pending/search?q={query} — 코드 prefix 검색.
+    반환: items 리스트 [{id, productCode, status, createdAt, registeredAt}]
+    """
+    url = f"{API_BASE_URL}/api/stocks/pending/search?q={urllib.parse.quote(query)}"
+    req = urllib.request.Request(url, headers={
+        "X-API-Key": api_key,
+        "User-Agent": "QR-Code-Printer",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("items", [])
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise InvalidApiKeyError("API 키가 유효하지 않습니다.")
+        raise
+
+
 def api_register_code(product_code: str, api_key: str) -> dict:
     """
     POST /api/stocks/pending — 대기열 등록.
@@ -713,7 +734,12 @@ class QRPrinterApp(tk.Tk):
                                    command=self._print,
                                    bg=ACCENT, fg="white",
                                    activebackground="#1D4ED8", **bst)
-        self.print_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.print_btn.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        self.search_btn = tk.Button(bf, text="🔍  서버 검색",
+                                    command=self._show_server_search,
+                                    bg="#10B981", fg="white",
+                                    activebackground="#059669", **bst)
+        self.search_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         self.status_var = tk.StringVar(value="준비")
         tk.Label(self, textvariable=self.status_var,
@@ -1232,6 +1258,203 @@ class QRPrinterApp(tk.Tk):
         messagebox.showinfo("재출력 완료",
                             f"과거 QR을 {copies}매 재출력했습니다.\n"
                             f"ID: {uid}\n"
+                            f"해당 QR 누적: {new_count}매",
+                            parent=parent)
+
+    # ── 서버 검색 재출력 ──────────────────────────
+    def _show_server_search(self):
+        """서버에서 코드를 prefix 검색하여 재출력하는 모달 다이얼로그."""
+        api_key = _resolve_api_key()
+        if not api_key:
+            messagebox.showerror(
+                "API 키 없음",
+                "서버 검색을 사용하려면 API 키가 필요합니다.\n"
+                "설정 파일의 'api_key' 항목을 확인하세요.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("서버 코드 검색 재출력")
+        win.configure(bg="#F0F4F8")
+        win.transient(self)
+        win.grab_set()
+        if os.path.exists(self._icon_path):
+            try:
+                win.iconbitmap(self._icon_path)
+            except Exception:
+                pass
+
+        tk.Label(win, text="서버에서 코드를 검색하여 재출력합니다",
+                 bg="#F0F4F8", fg="#1E293B",
+                 font=("맑은 고딕", 10, "bold"),
+                 padx=12, pady=8).pack(fill="x")
+        tk.Label(win,
+                 text="※ 3자 이상 입력하면 자동 검색됩니다. 결과를 선택 후 '재출력'을 누르세요.",
+                 bg="#F0F4F8", fg="#64748B",
+                 font=("맑은 고딕", 8), padx=12).pack(fill="x", pady=(0, 6))
+
+        sf = tk.Frame(win, bg="#F0F4F8", padx=12)
+        sf.pack(fill="x", pady=(0, 6))
+        tk.Label(sf, text="코드 일부 입력 (최대 10자):",
+                 bg="#F0F4F8", fg="#475569",
+                 font=("맑은 고딕", 9)).pack(anchor="w")
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(sf, textvariable=search_var,
+                                 font=("Consolas", 11))
+        search_entry.pack(fill="x", pady=(4, 0))
+
+        result_label_var = tk.StringVar(value="검색 결과")
+        tk.Label(win, textvariable=result_label_var,
+                 bg="#F0F4F8", fg="#1E293B",
+                 font=("맑은 고딕", 9, "bold"),
+                 padx=12).pack(fill="x", anchor="w")
+
+        tf = tk.Frame(win, bg="#F0F4F8")
+        tf.pack(fill="both", expand=True, padx=12, pady=(4, 0))
+        tree = ttk.Treeview(tf, columns=("code", "status", "created"),
+                            show="headings", height=10)
+        tree.heading("code", text="코드")
+        tree.heading("status", text="상태")
+        tree.heading("created", text="생성일")
+        tree.column("code", width=160, anchor="w")
+        tree.column("status", width=80, anchor="center")
+        tree.column("created", width=150, anchor="center")
+        tree.tag_configure("pending", foreground="#DC2626")
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        notice_var = tk.StringVar(value="")
+        notice_lbl = tk.Label(win, textvariable=notice_var,
+                              bg="#FEF3C7", fg="#92400E",
+                              font=("맑은 고딕", 8), padx=12, pady=4)
+
+        btns = tk.Frame(win, bg="#F0F4F8")
+        btns.pack(fill="x", padx=12, pady=(8, 10))
+        reprint_btn = tk.Button(btns, text="🖨  재출력",
+                                bg=self._accent_color, fg="white",
+                                font=("맑은 고딕", 9, "bold"),
+                                relief="flat", padx=14, pady=5, cursor="hand2",
+                                activebackground="#1D4ED8", state="disabled")
+        reprint_btn.pack(side="left")
+        tk.Button(btns, text="닫기", command=win.destroy,
+                  bg="#E2E8F0", fg="#1E293B",
+                  font=("맑은 고딕", 9), relief="flat",
+                  padx=12, pady=5, cursor="hand2").pack(side="right")
+
+        _after_id = [None]
+
+        def _update_tree(items):
+            for iid in tree.get_children():
+                tree.delete(iid)
+            for item in items:
+                code = item["productCode"]
+                is_pending = item.get("status") == "PENDING"
+                status_text = "미등록" if is_pending else "등록완료"
+                raw_dt = item.get("createdAt", "") or ""
+                created = raw_dt[:16].replace("T", " ") if raw_dt else ""
+                tag = "pending" if is_pending else ""
+                tree.insert("", "end", iid=code,
+                            values=(code, status_text, created), tags=(tag,))
+            cnt = len(items)
+            result_label_var.set(f"검색 결과  {cnt}건")
+            if cnt >= 20:
+                notice_var.set("⚠  최대 20건 표시 중 — 더 구체적인 코드를 입력하세요")
+                notice_lbl.pack(fill="x", padx=0, pady=(4, 0))
+            else:
+                notice_lbl.pack_forget()
+            reprint_btn.config(state="disabled")
+
+        def _do_search(query):
+            if not win.winfo_exists():
+                return
+            result_label_var.set("검색 중…")
+
+            def _worker():
+                try:
+                    items = api_search_codes(query, api_key)
+                    if win.winfo_exists():
+                        win.after(0, lambda: _update_tree(items))
+                except InvalidApiKeyError:
+                    if win.winfo_exists():
+                        win.after(0, lambda: (
+                            result_label_var.set("오류: API 키 인증 실패"),
+                            messagebox.showerror("API 키 오류",
+                                                 "API 키가 유효하지 않습니다.",
+                                                 parent=win),
+                        ))
+                except Exception as exc:
+                    if win.winfo_exists():
+                        win.after(0, lambda e=exc: result_label_var.set(f"오류: {e}"))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _on_key_change(*_):
+            if _after_id[0] is not None:
+                win.after_cancel(_after_id[0])
+                _after_id[0] = None
+            query = search_var.get().strip()
+            if len(query) >= 3:
+                _after_id[0] = win.after(300, lambda q=query: _do_search(q))
+            elif not query:
+                _update_tree([])
+                result_label_var.set("검색 결과")
+
+        search_var.trace_add("write", _on_key_change)
+
+        def _on_select(_event=None):
+            reprint_btn.config(state="normal" if tree.selection() else "disabled")
+
+        def _on_reprint(_event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            uid = sel[0]
+            self._reprint_from_search(uid, parent=win)
+
+        tree.bind("<<TreeviewSelect>>", _on_select)
+        tree.bind("<Double-1>", _on_reprint)
+        reprint_btn.config(command=_on_reprint)
+
+        dw, dh = 440, 460
+        x = self.winfo_x() + (self.winfo_width() - dw) // 2
+        y = self.winfo_y() + (self.winfo_height() - dh) // 2
+        win.geometry(f"{dw}x{dh}+{x}+{y}")
+        search_entry.focus_set()
+
+    def _reprint_from_search(self, uid: str, parent=None):
+        """서버 검색으로 찾은 코드를 현재 수량으로 재출력하고 이력에 추가."""
+        copies = self._read_copies()
+        answer = messagebox.askyesno(
+            "서버 검색 재출력",
+            f"검색된 코드를 {copies}매 출력합니다.\n\n"
+            f"코드: {uid}\n\n"
+            f"계속하시겠습니까?",
+            icon="question", default="yes", parent=parent)
+        if not answer:
+            return
+
+        printer = self._do_print(uid, copies)
+        if printer is None:
+            return
+
+        existing = next((h for h in self._print_history if h["id"] == uid), None)
+        base_count = existing["count"] if existing else 0
+        new_count = base_count + copies
+        now = datetime.datetime.now()
+        self._push_history(uid, new_count, now)
+
+        if uid == self._unique_value:
+            self._print_count   = new_count
+            self._last_print_at = now
+            self._apply_print_state()
+        else:
+            self.history_btn.config(state="normal")
+
+        self._set_status(f"✅ 서버 검색 재출력 → {printer} ({copies}매)")
+        messagebox.showinfo("재출력 완료",
+                            f"코드를 {copies}매 재출력했습니다.\n"
+                            f"코드: {uid}\n"
                             f"해당 QR 누적: {new_count}매",
                             parent=parent)
 
